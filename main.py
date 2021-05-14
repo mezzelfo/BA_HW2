@@ -165,8 +165,10 @@ class Problem():
         return Vnew
 
     def value_iteration_directly_decomposed(self, gamma=0.99):
-        V = np.zeros(self.inv_dimensions)
+        V = np.zeros(self.inv_dimensions, dtype=np.float32)
         Ms, Rs = self.generate_Pi_and_R_by_decomposition()
+        Ms = [m.astype(np.float32) for m in Ms]
+        Rs = [r.astype(np.float32) for r in Rs]
         print('generated')
         start = time.time()
         for iteration in range(1000):
@@ -190,6 +192,43 @@ class Problem():
                 vs.append(Vnew)
             Vnew = functools.reduce(np.minimum, vs)  # np.asarray(vs).min(0)
             if np.allclose(V, Vnew):
+                print(f'Converged at iteration {iteration}!')
+                break
+            V = Vnew
+        else:
+            print('Did not converge :(')
+        print(f'Elapsed time decoupled: {time.time()-start}')
+        #np.savetxt('V2.txt', Vnew, delimiter=',')
+        return Vnew
+
+    def value_iteration_directly_decomposed_pytorch(self, gamma=0.99, device = 'cuda'):
+        V = torch.zeros(self.inv_dimensions).to(device)
+        Ms, Rs = self.generate_Pi_and_R_by_decomposition()
+        Ms = [torch.from_numpy(m).float().to(device) for m in Ms]
+        Rs = [torch.from_numpy(r).float().to(device) for r in Rs]
+        print('generated')
+        start = time.time()
+        for iteration in range(1000):
+            print(iteration)
+            vs = []
+            for action in range(self.num_actions):
+                selectedMs = [Ms[i][1 if i == action-1 else 0]
+                              for i in range(self.num_item)]
+                selectedRs = [Rs[i][1 if i == action-1 else 0]
+                              for i in range(self.num_item)]
+
+                #Vnew = gamma*np.einsum('ABCD,iA,jB,kC,lD->ijkl',V,*selectedMs,optimize='optimal')
+                Vnew = gamma * \
+                    functools.reduce(lambda W, m: torch.tensordot(
+                        W, m, dims=([0], [1])), selectedMs, V)
+
+                for i in range(self.num_item):
+                    Vnew += selectedRs[i].reshape([1]
+                                                  * i+[-1]+[1]*(self.num_item-i-1))
+
+                vs.append(Vnew)
+            Vnew = functools.reduce(torch.minimum, vs)  # np.asarray(vs).min(0)
+            if torch.allclose(V, Vnew):
                 print(f'Converged at iteration {iteration}!')
                 break
             V = Vnew
@@ -254,12 +293,22 @@ class Problem():
 problem = Problem.from_single(
     items_num=4,
     demand_probs=[1, 1, 1],
-    max_inv=20,
+    max_inv=100,
     make=2
 )
 #problem.simulate(50, 500, (0, 0, 0, 0))
 # problem.check_big_from_decomposition()
 
 #V1 = problem.value_iteration_assembled_decomposed()
-V2 = problem.value_iteration_directly_decomposed()
+V1 = problem.value_iteration_directly_decomposed_pytorch(device='cuda').cpu()
+# V2 = problem.value_iteration_directly_decomposed_pytorch(device='cpu')
+# V3 = problem.value_iteration_directly_decomposed()
+
+# print('V1,V2',np.allclose(V1,V2))
+# print('V1,V3',np.allclose(V1,V3))
+# print('V2,V3',np.allclose(V2,V3))
+
+# np.save('V1.npy',V1)
+# np.save('V2.npy',V2)
+# np.save('V3.npy',V3)
 #assert np.allclose(V1,V2)
