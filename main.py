@@ -5,6 +5,7 @@ import math
 import functools
 import time
 import torch
+import matplotlib.pyplot as plt
 
 
 class SingleProductDemand():
@@ -209,7 +210,7 @@ class Problem():
         print('generated')
         start = time.time()
         for iteration in range(1000):
-            print(iteration)
+            #print(iteration)
             vs = []
             for action in range(self.num_actions):
                 selectedMs = [Ms[i][1 if i == action-1 else 0]
@@ -228,6 +229,11 @@ class Problem():
 
                 vs.append(Vnew)
             Vnew = functools.reduce(torch.minimum, vs)  # np.asarray(vs).min(0)
+
+            tmp_policy = torch.stack(vs).argmin(0)
+            if torch.all(tmp_policy == optimal_policy):
+                print(f'Iteration {iteration}: already found optimal policy')
+
             if torch.allclose(V, Vnew):
                 print(f'Converged at iteration {iteration}!')
                 break
@@ -235,8 +241,7 @@ class Problem():
         else:
             print('Did not converge :(')
         print(f'Elapsed time decoupled: {time.time()-start}')
-        #np.savetxt('V2.txt', Vnew, delimiter=',')
-        return Vnew
+        return Vnew, vs
 
     def assemble_from_decomposition(self):
         matrix = np.zeros([self.num_actions]+self.inv_dimensions*2)
@@ -291,18 +296,33 @@ class Problem():
 
 
 problem = Problem.from_single(
-    items_num=4,
-    demand_probs=[1, 1, 1],
+    items_num=2,
+    demand_probs=[1,2,3,4,5,4,3,2,1],
     max_inv=100,
-    make=2
+    make=9
 )
 #problem.simulate(50, 500, (0, 0, 0, 0))
 # problem.check_big_from_decomposition()
 
 #V1 = problem.value_iteration_assembled_decomposed()
-V1 = problem.value_iteration_directly_decomposed_pytorch(device='cuda').cpu()
+
+optimal_policy = torch.zeros((101,101)).cuda()
+
+V1, vs = problem.value_iteration_directly_decomposed_pytorch(device='cuda')
+V1 = V1.cpu().numpy()
+optimal_policy = torch.stack(vs).argmin(0)
+
+plt.matshow(V1)
+plt.matshow(optimal_policy.cpu())
+plt.show()
+
+V1, vs = problem.value_iteration_directly_decomposed_pytorch(device='cuda')
+
 # V2 = problem.value_iteration_directly_decomposed_pytorch(device='cpu')
 # V3 = problem.value_iteration_directly_decomposed()
+
+#np.savetxt('V.txt', V1, delimiter=',')
+
 
 # print('V1,V2',np.allclose(V1,V2))
 # print('V1,V3',np.allclose(V1,V3))
