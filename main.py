@@ -1,5 +1,6 @@
 import itertools
 import copy
+from os import stat
 import numpy as np
 import math
 import functools
@@ -13,9 +14,13 @@ class SingleProductDemand():
         self.demand = None
         self.probs = None
         self.max_demand = None
+        self.torch_distrib = None
 
     def iterate(self):
         return zip(self.demand, self.probs)
+
+    def sample(self, num_samples):
+        return self.torch_distrib.sample((num_samples,))
 
     @classmethod
     def from_prob_array(cls, probabilities):
@@ -23,6 +28,8 @@ class SingleProductDemand():
         _d.max_demand = len(probabilities)-1
         _d.probs = [p/sum(probabilities) for p in probabilities]
         _d.demand = list(range(_d.max_demand+1))
+        _d.torch_distrib = torch.distributions.Categorical(
+            torch.tensor(probabilities))
         return _d
 
 
@@ -41,6 +48,9 @@ class Demands():
 
     def single_iter(self, i):
         return self.demands[i].iterate()
+
+    def sample(self, num_samples):
+        return torch.stack([d.sample(num_samples) for d in self.demands])
 
     @classmethod
     def from_repeated_demand(cls, demand, N):
@@ -87,7 +97,6 @@ class Problem():
         if action > 0:
             item_to_prod = action-1
             state[item_to_prod] += self.makes[item_to_prod]
-            # TODO: add production cost
 
         tmp_state = state-demand
         unsatisfied_demand = -tmp_state[tmp_state < 0]
@@ -201,7 +210,7 @@ class Problem():
         #np.savetxt('V2.txt', Vnew, delimiter=',')
         return Vnew
 
-    def value_iteration_directly_decomposed_pytorch(self, gamma=0.99, device = 'cuda'):
+    def value_iteration_directly_decomposed_pytorch(self, gamma=0.99, device='cuda'):
         V = torch.zeros(self.inv_dimensions).to(device)
         Q = torch.rand([self.num_actions]+self.inv_dimensions).to(device)
         Ms, Rs = self.generate_Pi_and_R_by_decomposition()
@@ -209,8 +218,8 @@ class Problem():
         Rs = [torch.from_numpy(r).float().to(device) for r in Rs]
         print('generated')
         start = time.time()
-        for iteration in range(2000):
-            #print(iteration)
+        for iteration in range(200000):
+            # print(iteration)
             for action in range(self.num_actions):
                 selectedMs = [Ms[i][1 if i == action-1 else 0]
                               for i in range(self.num_item)]
@@ -228,8 +237,8 @@ class Problem():
 
                 Q[action] = Vnew
             Vnew = Q.min(0)[0]
-            
-            if (V-Vnew).abs().max().item() < 1e-15:#torch.allclose(V, Vnew):
+
+            if (V-Vnew).abs().max().item() < 1e-15:  # torch.allclose(V, Vnew):
                 print(f'Converged at iteration {iteration}!')
                 break
             V = Vnew
@@ -238,7 +247,7 @@ class Problem():
         print(f'Elapsed time decoupled: {time.time()-start}')
         return Vnew, Q
 
-    def generic_iteration_directly_decomposed_pytorch(self, gamma=0.99, device = 'cuda'):
+    def generic_iteration_directly_decomposed_pytorch(self, gamma=0.99, device='cuda'):
         V = torch.rand(self.inv_dimensions).to(device)
         mu = torch.ones(self.inv_dimensions, dtype=torch.int64).to(device)
         Q = torch.rand([self.num_actions]+self.inv_dimensions).to(device)
@@ -251,9 +260,9 @@ class Problem():
             for k in range(6):
                 for action in range(self.num_actions):
                     selectedMs = [Ms[i][1 if i == action-1 else 0]
-                                for i in range(self.num_item)]
+                                  for i in range(self.num_item)]
                     selectedRs = [Rs[i][1 if i == action-1 else 0]
-                                for i in range(self.num_item)]
+                                  for i in range(self.num_item)]
 
                     #Vnew = gamma*np.einsum('ABCD,iA,jB,kC,lD->ijkl',V,*selectedMs,optimize='optimal')
                     Vnew = gamma * \
@@ -262,11 +271,12 @@ class Problem():
 
                     for i in range(self.num_item):
                         Vnew += selectedRs[i].reshape([1]
-                                                    * i+[-1]+[1]*(self.num_item-i-1))
+                                                      * i+[-1]+[1]*(self.num_item-i-1))
 
                     Q[action] = Vnew
 
-                V = torch.gather(Q,0,mu.unsqueeze(0).repeat((3,1,1)))[0]
+                V = torch.gather(Q, 0, mu.unsqueeze(0).repeat((3, 1, 1)))[
+                    0]  # TODO: fix constant argument in repeat
             munew = Q.argmin(0)
             if torch.all(munew == mu):
                 print(f'Converged at iteration {iteration}!')
@@ -275,7 +285,7 @@ class Problem():
         else:
             print('Did not converge')
         print(f'Elapsed time decoupled: {time.time()-start}')
-        return V, Q
+        return V, Q, mu
 
     def assemble_from_decomposition(self):
         matrix = np.zeros([self.num_actions]+self.inv_dimensions*2)
@@ -318,8 +328,17 @@ class Problem():
         assert np.allclose(Me, Md)
         assert np.allclose(Re, Rd)
 
-    def simulate(self, time_steps, repetitions, initial_state):
-        raise NotImplementedError()
+    def simulate(self, time_steps, repetitions, initial_state, policy, gamma):
+        policy = policy.cpu().numpy()
+        total_costs = [0 for _ in range(repetitions)]
+        for r in range(repetitions):
+            state = np.array(initial_state)
+            for t in range(time_steps):
+                action = policy[tuple(state)]
+                demands = self.demands.sample(1).flatten().cpu().numpy()
+                cost, state = self.dynamic(state, action, demands)
+                total_costs[r] += cost * gamma**t
+        return total_costs
 
     @classmethod
     def from_single(cls, items_num, demand_probs, max_inv, make):
@@ -330,7 +349,8 @@ class Problem():
 
     @classmethod
     def from_multiple(cls, demand_probs, max_inv, make):
-        _demands = Demands([SingleProductDemand.from_prob_array(d) for d in demand_probs])
+        _demands = Demands([SingleProductDemand.from_prob_array(d)
+                           for d in demand_probs])
         _states = State.from_max_invs([max_inv]*len(demand_probs))
         return cls(_demands, _states, [make]*len(demand_probs))
 
@@ -343,31 +363,49 @@ class Problem():
 # )
 
 problem = Problem.from_multiple(
-    demand_probs=
-    [
-        [1,2,3,4,5,4,3,2,1],
-        [5,4,3,2,1],
+    demand_probs=[
+        [1, 2, 3, 4, 5, 6],
+        [6, 5, 4, 3, 2, 1],
     ],
     max_inv=100,
-    make=9
+    make=7
 )
 #problem.simulate(50, 500, (0, 0, 0, 0))
 # problem.check_big_from_decomposition()
 
 #V1 = problem.value_iteration_assembled_decomposed()
 
-optimal_policy = torch.zeros((101,101)).cuda()
+V, Q = problem.value_iteration_directly_decomposed_pytorch(
+    device='cuda', gamma=0.99)
+mu = Q.argmin(0)
 
-V1, Q1 = problem.value_iteration_directly_decomposed_pytorch(device='cuda')
+state_to_be_tested = [5,5]
 
-V2, Q2 = problem.generic_iteration_directly_decomposed_pytorch()
+res = problem.simulate(
+    time_steps=500,
+    repetitions=1000,
+    initial_state=state_to_be_tested,
+    policy=mu,
+    gamma=0.99
+)
 
-print((V1-V2).abs().max().item())
+import matplotlib.pyplot as plt
 
-mu1 = Q1.argmin(0)
-mu2 = Q2.argmin(0)
+plt.hist(res,density=True,bins=50)
+ymin, ymax = plt.ylim()
+plt.vlines(V[tuple(state_to_be_tested)].item(),ymin, ymax,colors='red',label='true')
+plt.vlines(np.mean(res),ymin, ymax,colors='green',linestyles='dashed',label='sample mean')
+plt.legend()
+plt.show()
 
-print(torch.where(mu1 != mu2))
+#V2, Q2 = problem.generic_iteration_directly_decomposed_pytorch()
+
+# print((V1-V2).abs().max().item())
+
+# mu1 = Q1.argmin(0)
+# mu2 = Q2.argmin(0)
+
+# print(torch.where(mu1 != mu2))
 
 # V1 = V1.cpu().numpy()
 
