@@ -94,7 +94,6 @@ class Problem():
         self.num_actions = self.num_item+1
         self.inv_dimensions = [d+1 for d in self.states.max_invs]
 
-    # TODO: potrebbe essere rotta
     def dynamic(self, inventory_state, machine_state, action, demand):
         cost = 0.0
         if action > 0:
@@ -186,7 +185,7 @@ class Problem():
                     #Vnew = gamma*np.einsum('ABCD,iA,jB,kC,lD->ijkl',V,*selectedMs,optimize='optimal')
                     Vnew = gamma * \
                         functools.reduce(lambda W, m: torch.tensordot(
-                            W, m, dims=([0], [1])), selectedMs, V[machine_state])
+                            W, m, dims=([0], [1])), selectedMs, V[action])
 
                     for i in range(self.num_item):
                         Vnew += selectedRs[i].reshape([1]
@@ -229,7 +228,7 @@ class Problem():
 
                         Vnew = gamma * \
                             functools.reduce(lambda W, m: torch.tensordot(
-                                W, m, dims=([0], [1])), selectedMs, V[machine_state])
+                                W, m, dims=([0], [1])), selectedMs, V[action])
 
                         for i in range(self.num_item):
                             Vnew += selectedRs[i].reshape([1]
@@ -249,85 +248,19 @@ class Problem():
         print(f'Elapsed time decoupled: {time.time()-start}')
         return V, Q
 
-    # TODO: potrebbe essere rotta
     def simulate(self, initial_inventory_state, initial_machine_state, policy, time_steps = 500, repetitions = 100, gamma = 0.99):
         policy = policy.cpu().numpy()
         total_costs = np.zeros(repetitions)
         for r in range(repetitions):
             inventory_state = np.array(initial_inventory_state)
             machine_state = initial_machine_state
-            #print('init',inventory_state,machine_state)
             for t in range(time_steps):
                 action = policy[tuple([machine_state])+tuple(inventory_state)]
-                assert isinstance(action, (int, np.int64))
-                assert action in [0,1,2]
                 demands = self.demands.sample(1).flatten().cpu().numpy()
                 cost, inventory_state, machine_state = self.dynamic(inventory_state, machine_state, action, demands)
                 machine_state = machine_state.item()
-                #print(t,inventory_state,machine_state)
                 total_costs[r] += cost * (gamma**t)
         return total_costs
-
-    def simulate_v2(self, initial_inventory_state, initial_machine_state, policy, time_steps = 1000, repetitions = 1000, gamma = 0.99):
-        inv_state = torch.tensor(initial_inventory_state).view(-1,1).repeat(1,repetitions)
-        machine_state = torch.tensor(initial_machine_state).view(-1,1).repeat(1,repetitions)
-        makes = torch.tensor([[0,0],[self.makes[0],0],[0,self.makes[1]]])
-        cost = torch.zeros(repetitions)
-        for time in range(time_steps):
-            # print('time'.center(80,'*'))
-            # print(inv_state)
-            # print(machine_state)
-
-            action = policy[tuple(torch.vstack([machine_state,inv_state]))]
-            #print(action)
-            orders = makes[action]
-            orders = torch.where(action == machine_state, makes[action].T, makes[action].T//2)
-            inv_state += orders
-
-            setups = torch.where((action != machine_state) & (action > 0), 400, 0).flatten()
-            cost += setups * (gamma ** time)
-            
-            
-            demds = torch.multinomial(self.demands.w, repetitions, True)
-            #print(demds)
-            exceeded = torch.where(demds > inv_state, demds-inv_state, 0)
-            cost += (exceeded.sum(0)*100) * (gamma ** time)
-            inv_state -= demds
-            inv_state[inv_state < 0] = 0
-            inv_state[inv_state > 100] = 100
-            cost += (inv_state.sum(0)/100) * (gamma ** time)
-            machine_state = action
-        return cost
-
-    # def simulate_v3(self, initial_inventory_state, initial_machine_state, policy, time_steps = 1000, repetitions = 100, gamma = 0.99):
-    #     inv_state = torch.tensor(initial_inventory_state).view(-1,1).repeat(1,repetitions)
-    #     machine_state = torch.tensor(initial_machine_state).view(-1,1).repeat(1,repetitions)
-    #     totalcost = torch.zeros(repetitions)
-    #     for time in range(time_steps):
-    #         demds = torch.multinomial(self.demands.w, repetitions, True)
-    #         action = policy[tuple(torch.vstack([machine_state,inv_state]))]
-    #         for r in range(repetitions):
-    #             for i in range(self.num_item):
-    #                 a = 0
-    #                 if i+1 == action[r]:
-    #                     if machine_state[:,r].item() == action[r].item():
-    #                         a = 1
-    #                     else:
-    #                         a = 2
-    #                 c, inv_tmp_state = self.single_dynamic(i, inv_state[i,r].item(), a, demds[i,r].item())
-    #                 totalcost[r] += c * (gamma ** time)
-    #                 inv_state[i,r] = inv_tmp_state
-    #             machine_state[:,r] = action[r].item()
-
-    #             # c, new_state, new_machine_state = self.dynamic(
-    #             #     inv_state[:,r].flatten(),
-    #             #     machine_state[:,r].item(),
-    #             #     action[r].item(),
-    #             #     demds[:,r].flatten())
-    #             # inv_state[:,r] = new_state
-    #             # machine_state[:,r] = new_machine_state
-    #             # totalcost[r] += c * (gamma ** time)
-    #     return totalcost
 
     @classmethod
     def from_single(cls, items_num, demand_probs, max_inv, make):
@@ -350,7 +283,7 @@ problem = Problem.from_multiple(
         [1,2,3,4,5,6],
     ],
     max_inv=100,
-    make=20
+    make=14
 )
 
 # problem = Problem.from_single(
@@ -368,22 +301,20 @@ np.savetxt('V.csv',V.cpu().numpy().ravel(),delimiter = ',')
 np.savetxt('Q.csv',Q.cpu().numpy().ravel(),delimiter = ',')
 np.savetxt('mu.csv',mu.cpu().numpy().ravel(),delimiter = ',')
 
-init_inventory = [0,0]
-init_machine = 0
+init_inventory = [5,5]
+init_machine = 1
 vtrue = V[tuple([init_machine])+tuple(init_inventory)].item()
 print(vtrue)
 
-res = problem.simulate_v2(
+res = problem.simulate(
     init_inventory, init_machine, mu.cpu()
 )
-#print(np.mean(res), np.min(res), np.max(res))
 print(res.mean(), res.min(), res.max(), res.shape)
-exit()
 import matplotlib.pyplot as plt
 
 plt.hist(res,density=True,bins=50)
 ymin, ymax = plt.ylim()
 plt.vlines(vtrue,ymin, ymax,colors='red',label='true')
-plt.vlines(np.mean(res),ymin, ymax,colors='green',linestyles='dashed',label='sample mean')
+plt.vlines(res.mean(),ymin, ymax,colors='green',linestyles='dashed',label='sample mean')
 plt.legend()
 plt.show()
