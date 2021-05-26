@@ -32,7 +32,6 @@ class SingleProductDemand():
             torch.tensor(probabilities))
         return _d
 
-
 class Demands():
     def __init__(self, demands):
         self.demands = demands
@@ -354,78 +353,3 @@ class Problem():
         _states = State.from_max_invs([max_inv]*len(demand_probs))
         return cls(_demands, _states, [make]*len(demand_probs))
 
-
-# problem = Problem.from_single(
-#     items_num=2,
-#     demand_probs=[1,2,3,4,5,4,3,2,1],
-#     max_inv=100,
-#     make=9
-# )
-
-problem = Problem.from_multiple(
-    demand_probs=[
-        [1, 2, 3, 4, 5, 6],
-        [6, 5, 4, 3, 2, 1],
-    ],
-    max_inv=100,
-    make=7
-)
-#problem.simulate(50, 500, (0, 0, 0, 0))
-# problem.check_big_from_decomposition()
-
-#V1 = problem.value_iteration_assembled_decomposed()
-
-V, Q = problem.value_iteration_directly_decomposed_pytorch(
-    device='cuda', gamma=0.99)
-mu = Q.argmin(0)
-
-state_to_be_tested = [5,5]
-
-res = problem.simulate(
-    time_steps=500,
-    repetitions=1000,
-    initial_state=state_to_be_tested,
-    policy=mu,
-    gamma=0.99
-)
-
-import matplotlib.pyplot as plt
-
-plt.hist(res,density=True,bins=50)
-ymin, ymax = plt.ylim()
-plt.vlines(V[tuple(state_to_be_tested)].item(),ymin, ymax,colors='red',label='true')
-plt.vlines(np.mean(res),ymin, ymax,colors='green',linestyles='dashed',label='sample mean')
-plt.legend()
-plt.show()
-
-#V2, Q2 = problem.generic_iteration_directly_decomposed_pytorch()
-
-# print((V1-V2).abs().max().item())
-
-# mu1 = Q1.argmin(0)
-# mu2 = Q2.argmin(0)
-
-# print(torch.where(mu1 != mu2))
-
-# V1 = V1.cpu().numpy()
-
-# plt.matshow(V1)
-# plt.matshow(optimal_policy.cpu())
-# plt.show()
-
-# V1, vs = problem.value_iteration_directly_decomposed_pytorch(device='cuda')
-
-# V2 = problem.value_iteration_directly_decomposed_pytorch(device='cpu')
-# V3 = problem.value_iteration_directly_decomposed()
-
-#np.savetxt('V.txt', V1, delimiter=',')
-
-
-# print('V1,V2',np.allclose(V1,V2))
-# print('V1,V3',np.allclose(V1,V3))
-# print('V2,V3',np.allclose(V2,V3))
-
-# np.save('V1.npy',V1)
-# np.save('V2.npy',V2)
-# np.save('V3.npy',V3)
-#assert np.allclose(V1,V2)
