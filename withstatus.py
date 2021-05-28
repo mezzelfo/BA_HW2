@@ -102,14 +102,14 @@ class Problem():
                 inventory_state[item_to_prod] += self.makes[item_to_prod]
             else:
                 inventory_state[item_to_prod] += self.makes[item_to_prod]//2
-                cost += 400
+                cost += 40
         tmp_state = inventory_state-demand
         unsatisfied_demand = -tmp_state[tmp_state < 0]
         cost += 100*unsatisfied_demand.sum().item()
         tmp_state[tmp_state < 0] = 0
         # TODO: maybe switch order next two lines
         tmp_state = np.minimum(tmp_state, self.states.max_invs)
-        cost += tmp_state.sum().item()/100
+        cost += tmp_state.sum().item()
         return cost, tmp_state, action
 
     def single_dynamic(self, item_to_prod, initial_inventory_state, action, demand):
@@ -123,7 +123,7 @@ class Problem():
         elif action == 2: #PRODUCI SETUP
             inv_state += self.makes[item_to_prod]//2
             #inv_state += self.makes[item_to_prod]
-            cost += 400
+            cost += 40
         else:
             raise NotImplementedError()
 
@@ -132,7 +132,7 @@ class Problem():
         cost += 100*unsatisfied_demand
         inv_tmp_state = min(max(inv_tmp_state, 0),
                             self.states.max_invs[item_to_prod])
-        cost += inv_tmp_state/100
+        cost += inv_tmp_state
         return cost, inv_tmp_state
 
     def generate_Pi_and_R_by_decomposition(self):
