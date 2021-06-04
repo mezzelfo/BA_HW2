@@ -1,12 +1,8 @@
 import itertools
 import copy
-from os import stat
-from platform import machine
 import numpy as np
-import math
 import functools
 import time
-from numpy.lib.arraysetops import isin
 import torch
 import matplotlib.pyplot as plt
 
@@ -100,9 +96,12 @@ class Problem():
             item_to_prod = action-1
             if action == machine_state:
                 inventory_state[item_to_prod] += self.makes[item_to_prod]
-            else:
+            elif action % 2 == machine_state % 2:
                 inventory_state[item_to_prod] += self.makes[item_to_prod]//2
                 cost += 40
+            else:
+                inventory_state[item_to_prod] += self.makes[item_to_prod]//4
+                cost += 80
         tmp_state = inventory_state-demand
         unsatisfied_demand = -tmp_state[tmp_state < 0]
         cost += 100*unsatisfied_demand.sum().item()
@@ -116,14 +115,16 @@ class Problem():
         inv_state = initial_inventory_state
         cost = 0
 
-        if action == 0: #NON FARE
+        if action == 0: # 0 - Do not produce
             pass
-        elif action == 1: #PRODUCI NORMALE
-            inv_state += self.makes[item_to_prod]
-        elif action == 2: #PRODUCI SETUP
+        elif action == 1:  # 1 - startup from different familiy
+            inv_state += self.makes[item_to_prod]//4
+            cost += 80
+        elif action == 2: # 2 - startup from same familiy
             inv_state += self.makes[item_to_prod]//2
-            #inv_state += self.makes[item_to_prod]
             cost += 40
+        elif action == 3: # 3 - no startup
+            inv_state += self.makes[item_to_prod]
         else:
             raise NotImplementedError()
 
@@ -139,12 +140,15 @@ class Problem():
         matrices = []
         rewards = []
         for item in range(self.num_item):
-            matrix = np.zeros([3]+[self.inv_dimensions[item]]*2)
-            reward = np.zeros([3]+[self.inv_dimensions[item]])
+            matrix = np.zeros([4]+[self.inv_dimensions[item]]*2)
+            reward = np.zeros([4]+[self.inv_dimensions[item]])
             for initial_inventory_state in self.states.single_iter(item):
                 for (demand, prob) in self.demands.single_iter(item):
-                    # Do not produce, Produce normally, produce at startup
-                    for action in [0, 1, 2]:
+                    # 0 - Do not produce
+                    # 1 - startup from different familiy
+                    # 2 - startup from same familiy
+                    # 3 - no startup
+                    for action in [0, 1, 2, 3]:
                         cost, next_state = self.single_dynamic(
                             item, initial_inventory_state, action, demand
                         )
@@ -157,13 +161,14 @@ class Problem():
         return matrices, rewards
 
     def get_single_action(self, global_action, machine_state, item_idx):
-        if global_action != item_idx+1:
+        if global_action != item_idx+1:                 #non sto per produrre item_idx
             return 0
-        else:
-            if global_action == machine_state:
-                return 1
-            else:
-                return 2
+        elif global_action == machine_state:            #sto continuando a produrre item_idx
+            return 3
+        elif global_action % 2 == machine_state % 2:    #prodotto precedente della stessa famiglia
+            return 2
+        else:                                           #prodotto precedente di famiglia diversa
+            return 1
 
     def value_iteration(self, gamma=0.99, device='cuda'):
         V = torch.zeros([self.num_actions]+self.inv_dimensions).to(device)
@@ -216,9 +221,9 @@ class Problem():
         Rs = [torch.from_numpy(r).float().to(device) for r in Rs]
         print('generated')
         start = time.time()
-        for iteration in range(300):
+        for iteration in range(20):
             print(iteration)
-            for k in range(1000):
+            for k in range(max(5,iteration**2//5)):
                 for machine_state in range(self.num_actions):
                     for action in range(self.num_actions):
                         selectedMs = [Ms[i][self.get_single_action(action, machine_state, i)]
