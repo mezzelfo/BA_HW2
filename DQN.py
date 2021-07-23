@@ -5,27 +5,15 @@ import torch.nn.functional as F
 import torch.optim
 import numpy as np
 
-# production_makes = torch.diag(torch.tensor([0,16,16,16,16]))[1:,:].T.cuda()
-# production_setup_same_family = production_makes/2
-# production_setup_different_family = production_makes/4
-# production_plan = torch.FloatTensor([0,4,8,16]).cuda()
-# setup_cost_plan = torch.FloatTensor([0,80,40,0]).cuda()
-# setup_cost_same_family = 40.0
-# setup_cost_different_family = 80.0
-
-production_makes = torch.tensor([[0,0,0,0],[16,0,0,0],[0,16,0,0],[0,0,16,0],[0,0,0,16]],device='cuda')
-production_setup = torch.tensor([[0,0,0,0],[8,0,0,0],[0,8,0,0],[0,0,8,0],[0,0,0,8]],device='cuda')
-# production_makes = torch.tensor([[0,0],[12,0],[0,12]],device='cuda')
-# production_setup = torch.tensor([[0,0],[6,0],[0,6]],device='cuda')
-setup_cost = 40.0
-
+production_plan = torch.LongTensor([0,4,8,16]).cuda()
+setup_cost_plan = torch.FloatTensor([0,80,40,0]).cuda()
 demandsDistributions = torch.distributions.Categorical(torch.tensor([
         [1,2,3,4,5,6],
         [6,5,4,3,2,1],
         [1,2,3,4,5,0],
         [5,4,3,2,1,0],
         ], device='cuda'))
-max_inv = 50
+max_inv = 20
 L = 1000
 gamma = 0.99
 N = 4
@@ -37,11 +25,14 @@ def sample_transitions(initial_machine_state, initial_inventory_state, action):
     # initial_inventory_state:  tensor of size LxN
     # action:                   tensor of size L
     demds = demandsDistributions.sample((L,)) #tensor of size LxN
-    is_coherent = (action == initial_machine_state)
-    orders = torch.where(is_coherent.unsqueeze(1), production_makes[action], production_setup[action])
+    is_coherent = action == initial_machine_state
+    is_same_family = (action % 2) == (initial_machine_state % 2)
+    idx = (1*is_coherent+1*is_same_family+1)*(action > 0)
+    orders =  F.one_hot(action, N+1)[:,1:] * torch.gather(production_plan,0,idx).unsqueeze(-1)
+    cost = torch.gather(setup_cost_plan,0,idx)
+
     inv_state = initial_inventory_state+orders
-    cost = torch.where((is_coherent.logical_not()) & (action > 0), setup_cost, 0.0)
-    exceeded = torch.where(demds > inv_state, demds-inv_state, 0)
+    exceeded = (demds > inv_state) * (demds-inv_state)
     cost += exceeded.sum(1)*100
     inv_state -= demds
     inv_state = torch.clamp(inv_state, 0, max_inv)
@@ -86,12 +77,12 @@ net_old.load_state_dict(net.state_dict())
 criterion = nn.SmoothL1Loss()
 optimizer = torch.optim.Adam(net.parameters(), lr=0.001)
 
-losses = []
+infos = []
 cMax = 0
-for epoch in range(400):
+for epoch in range(500):
     for tick in range(max(10,epoch)):
         m_init = torch.randint(0,N+1,(L,), device='cuda')
-        i_init = torch.randint(0,max_inv+1,(L,N), device='cuda')
+        i_init = torch.randint(0,max_inv+1,(L,N), device='cuda').float()
         a_init = torch.randint(0,N+1,(L,), device='cuda')
 
         m, i, c = sample_transitions(m_init, i_init, a_init)
@@ -104,41 +95,56 @@ for epoch in range(400):
         loss = criterion(Qhat, target)
         loss.backward()
         optimizer.step()
-        losses.append((loss.item(),Qhat.mean().item()))
+        infos.append((loss.item(),Qhat.mean().item()))
         
     net_old.load_state_dict(net.state_dict())
 print('done')
 plt.figure(1)
-losses = np.asarray(losses)
+infos = np.asarray(infos)
+logloss = np.log(infos[:,0])
+smoothed_logloss = np.convolve(logloss,np.ones(100)/100,'valid')
 plt.subplot(1,2,1)
-plt.plot(np.log(losses[5:,0]), '-o')
+plt.plot(logloss)
+plt.plot(smoothed_logloss,'--r')
 plt.subplot(1,2,2)
-plt.plot(losses[5:,1], '-o')
-plt.plot(losses[5:,1]*0, '--')
-
-
-# muopt = torch.LongTensor(np.load('mu.npy')).cuda()
-# Qopt = torch.LongTensor(np.load('Q.npy')).cuda()
-inv = torch.arange(0,max_inv+1)
-X, Y = torch.meshgrid(inv,inv)
-grosso = 35*torch.ones_like(X)
-inv_state = torch.vstack([grosso.ravel(), grosso.ravel(), X.ravel(), Y.ravel()]).T.cuda()
-m_state = torch.ones((inv_state.shape[0],),dtype=torch.long, device='cuda')
-with torch.no_grad():
-    mu0 = net.get_actions(m_state*0, inv_state).reshape((max_inv+1,max_inv+1))
-    mu1 = net.get_actions(m_state*1, inv_state).reshape((max_inv+1,max_inv+1))
-    mu2 = net.get_actions(m_state*2, inv_state).reshape((max_inv+1,max_inv+1))
-    mu3 = net.get_actions(m_state*3, inv_state).reshape((max_inv+1,max_inv+1))
-    mu4 = net.get_actions(m_state*4, inv_state).reshape((max_inv+1,max_inv+1))
-    plt.figure(2)
-    plt.subplot(2,3,1)
-    plt.matshow(mu0.cpu(),vmin=0,vmax=4,fignum=False)
-    plt.subplot(2,3,2)
-    plt.matshow(mu1.cpu(),vmin=0,vmax=4,fignum=False)
-    plt.subplot(2,3,3)
-    plt.matshow(mu2.cpu(),vmin=0,vmax=4,fignum=False)
-    plt.subplot(2,3,4)
-    plt.matshow(mu3.cpu(),vmin=0,vmax=4,fignum=False)
-    plt.subplot(2,3,5)
-    plt.matshow(mu4.cpu(),vmin=0,vmax=4,fignum=False)
+plt.plot(infos[5:,1], '-o')
+plt.plot(infos[5:,1]*0, '--')
 plt.show()
+
+inv = torch.arange(0,max_inv+1)
+inv_state = torch.vstack([v.ravel() for v in torch.meshgrid(inv,inv,inv,inv)]).T.cuda()
+m_state = torch.ones((inv_state.shape[0],),dtype=torch.long, device='cuda')
+mu = []
+for m in range(N+1):
+    with torch.no_grad():
+        pippo = net.get_actions(m_state*m,inv_state)
+    pippo = pippo.reshape([max_inv+1]*N).cpu().numpy()
+    mu.append(pippo)
+np.save('mu_DQN.npy',mu)
+exit()
+# # muopt = torch.LongTensor(np.load('mu.npy')).cuda()
+# # Qopt = torch.LongTensor(np.load('Q.npy')).cuda()
+# inv = torch.arange(0,max_inv+1)
+# X, Y = torch.meshgrid(inv,inv)
+# grosso = 35*torch.ones_like(X)
+# inv_state = torch.vstack([grosso.ravel(), grosso.ravel(), X.ravel(), Y.ravel()]).T.cuda()
+# m_state = torch.ones((inv_state.shape[0],),dtype=torch.long, device='cuda')
+# with torch.no_grad():
+#     mu0 = net.get_actions(m_state*0, inv_state).reshape((max_inv+1,max_inv+1))
+#     mu1 = net.get_actions(m_state*1, inv_state).reshape((max_inv+1,max_inv+1))
+#     mu2 = net.get_actions(m_state*2, inv_state).reshape((max_inv+1,max_inv+1))
+#     mu3 = net.get_actions(m_state*3, inv_state).reshape((max_inv+1,max_inv+1))
+#     mu4 = net.get_actions(m_state*4, inv_state).reshape((max_inv+1,max_inv+1))
+#     plt.figure(2)
+#     plt.subplot(2,3,1)
+#     plt.matshow(mu0.cpu(),vmin=0,vmax=4,fignum=False)
+#     plt.subplot(2,3,2)
+#     plt.matshow(mu1.cpu(),vmin=0,vmax=4,fignum=False)
+#     plt.subplot(2,3,3)
+#     plt.matshow(mu2.cpu(),vmin=0,vmax=4,fignum=False)
+#     plt.subplot(2,3,4)
+#     plt.matshow(mu3.cpu(),vmin=0,vmax=4,fignum=False)
+#     plt.subplot(2,3,5)
+#     plt.matshow(mu4.cpu(),vmin=0,vmax=4,fignum=False)
+# plt.show()
+

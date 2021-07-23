@@ -1,3 +1,5 @@
 /venv
 *.csv
+*.npy
+*.zip
 /__pycache__
