@@ -86,6 +86,7 @@ class Problem():
         self.demands = demands
         self.states = states
         self.makes = np.asarray(makes)
+        self.makespoco = np.asarray(makes)//2
         self.num_item = self.states.N
         self.num_actions = self.num_item+1
         self.inv_dimensions = [d+1 for d in self.states.max_invs]
@@ -114,10 +115,13 @@ class Problem():
                     next_remaining_time_buckets = 2
                     cost += 80
             else:
-                if remaining_time_buckets == 0:
-                    next_inv_state[item_to_prod] += self.makes[item_to_prod]
-                else:
+                if remaining_time_buckets > 1:
                     cost += 10
+                elif remaining_time_buckets == 1:
+                    next_inv_state[item_to_prod] += self.makespoco[item_to_prod]
+                    cost += 3
+                else:
+                    next_inv_state[item_to_prod] += self.makes[item_to_prod]
 
         tmp_state = next_inv_state-demand
         unsatisfied_demand = -tmp_state[tmp_state < 0]
@@ -141,6 +145,9 @@ class Problem():
         elif flag == 3: # 3 - continue setup
             cost += 10
         elif flag == 4: # 4 - produce
+            inv_state += self.makespoco[item_single]
+            cost += 3
+        elif flag == 5: # 4 - produce
             inv_state += self.makes[item_single]
         else:
             raise NotImplementedError()
@@ -156,7 +163,7 @@ class Problem():
     def generate_Pi_and_R_by_decomposition(self):
         matrices = []
         rewards = []
-        SINGLE_ACTIONS = [0,1,2,3,4]
+        SINGLE_ACTIONS = [0,1,2,3,4,5]
 
         for item in range(self.num_item):
             matrix = np.zeros([len(SINGLE_ACTIONS)]+[self.inv_dimensions[item]]*2)
@@ -191,14 +198,16 @@ class Problem():
             else:
                 return 2
         else:
-            if remaining_time_buckets > 0:
+            if remaining_time_buckets > 1:
                 return 3
-            else:
+            elif remaining_time_buckets == 1:
                 return 4
+            else:
+                return 5
         
     def value_iteration(self, gamma=0.99, device='cuda'):
-        V = torch.zeros([3]+[self.num_item]+self.inv_dimensions).to(device)
-        Q = torch.rand([self.num_actions]+[3]+[self.num_item]+self.inv_dimensions).to(device)
+        V = torch.rand([3]+[self.num_item]+self.inv_dimensions, device=device)
+        Q = torch.rand([self.num_actions]+[3]+[self.num_item]+self.inv_dimensions, device=device)
         Ms, Rs = self.generate_Pi_and_R_by_decomposition()
         Ms = [torch.from_numpy(m).float().to(device) for m in Ms]
         Rs = [torch.from_numpy(r).float().to(device) for r in Rs]
@@ -249,37 +258,50 @@ class Problem():
         return Vnew, Q
 
     def generic_iteration_directly_decomposed_pytorch(self, gamma=0.99, device='cuda'):
-        # V(machinestate, invetorystate)
-        V = torch.rand([self.num_actions]+self.inv_dimensions, device=device)
-        # mu(machinestate, invetorystate)
+        V = torch.rand([3]+[self.num_item]+self.inv_dimensions, device=device)
+        Q = torch.rand([self.num_actions]+[3]+[self.num_item]+self.inv_dimensions, device=device)
         mu = torch.zeros_like(V, dtype=torch.int64, device=device)
-        # Q(action, machinestate, inventorystate)
-        Q = torch.rand([self.num_actions]*2+self.inv_dimensions, device=device)
+
 
         Ms, Rs = self.generate_Pi_and_R_by_decomposition()
         Ms = [torch.from_numpy(m).float().to(device) for m in Ms]
         Rs = [torch.from_numpy(r).float().to(device) for r in Rs]
         print('generated')
         start = time.time()
-        for iteration in range(20):
+        for iteration in range(30):
             print(iteration)
-            for k in range(max(5,iteration**2//5)):
-                for machine_state in range(self.num_actions):
-                    for action in range(self.num_actions):
-                        selectedMs = [Ms[i][self.get_single_action(action, machine_state, i)]
-                                      for i in range(self.num_item)]
-                        selectedRs = [Rs[i][self.get_single_action(action, machine_state, i)]
-                                      for i in range(self.num_item)]
+            for k in range(max(5,iteration**2//2)):
+                for remaining_time_buckets in range(3):
+                    for machine_state in range(self.num_item):
+                        for action in range(self.num_actions):
+                            selectedMs = [Ms[i][self.get_single_action(action, machine_state, i, remaining_time_buckets)]
+                                        for i in range(self.num_item)]
+                            selectedRs = [Rs[i][self.get_single_action(action, machine_state, i, remaining_time_buckets)]
+                                        for i in range(self.num_item)]
 
-                        Vnew = gamma * \
-                            functools.reduce(lambda W, m: torch.tensordot(
-                                W, m, dims=([0], [1])), selectedMs, V[action])
+                            item_to_prod = action-1
+                            # IDLE
+                            next_machine_state = machine_state
+                            next_remaining_time_buckets = remaining_time_buckets
+                            
+                            if action > 0:
+                                next_machine_state = item_to_prod
+                                next_remaining_time_buckets = max(remaining_time_buckets-1,0)
+                                if item_to_prod != machine_state:
+                                    if item_to_prod % 2 == machine_state % 2:
+                                        next_remaining_time_buckets = 1
+                                    else:
+                                        next_remaining_time_buckets = 2
 
-                        for i in range(self.num_item):
-                            Vnew += selectedRs[i].reshape([1]
-                                                          * i+[-1]+[1]*(self.num_item-i-1))
+                            Vnew = gamma * \
+                                functools.reduce(lambda W, m: torch.tensordot(
+                                    W, m, dims=([0], [1])), selectedMs, V[next_remaining_time_buckets, next_machine_state])
 
-                        Q[action, machine_state] = Vnew
+                            for i in range(self.num_item):
+                                Vnew += selectedRs[i].reshape([1]
+                                                            * i+[-1]+[1]*(self.num_item-i-1))
+
+                            Q[action, remaining_time_buckets, machine_state] = Vnew
 
                 V = torch.gather(Q, 0, mu.unsqueeze(0).repeat(
                     tuple([self.num_actions]+[1]*len(mu.shape))))[0]

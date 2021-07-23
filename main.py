@@ -14,23 +14,28 @@ problem = Problem.from_multiple(
     make=4*4
 )
 
-V, Q = problem.value_iteration(gamma=0.99)
-mu = Q.argmin(0)
+#V, Q = problem.value_iteration(gamma=0.99)
+V2, Q2 = problem.generic_iteration_directly_decomposed_pytorch(gamma=0.99)
+
+#print((Q-Q2).abs().max())
+exit()
+
+#mu = Q.argmin(0)
 
 #np.save('mu_opt.npy',mu.cpu().numpy())
 #exit()
 
-init_time_bucket = 0
-init_machine = 0
-init_inventory = [20,20,20,20]
-vtrue = V[tuple([init_time_bucket,init_machine])+tuple(init_inventory)].item()
-print(vtrue)
+# init_time_bucket = 0
+# init_machine = 0
+# init_inventory = [20,20,20,20]
+# vtrue = V[tuple([init_time_bucket,init_machine])+tuple(init_inventory)].item()
+# print(vtrue)
 
-res = problem.simulate(
-    init_inventory, init_machine, init_time_bucket, mu.cpu(),
-    time_steps = 1000, repetitions = 1000, gamma = 0.99
-)
-print(res.mean(), res.min(), res.max(), res.shape)
+# res = problem.simulate(
+#     init_inventory, init_machine, init_time_bucket, mu.cpu(),
+#     time_steps = 1000, repetitions = 1000, gamma = 0.99
+# )
+# print(res.mean(), res.min(), res.max(), res.shape)
 
 
 # mu = mu.cpu().numpy()
